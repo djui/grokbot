@@ -11,7 +11,9 @@ The idle menu icon uses the official-style, rotated Grokbot silhouette as a mono
 - A local timeline of state changes (never message contents)
 - Connection and stale-data states
 - Optional attention notifications and launch at login
-- Native Liquid Glass presentation on macOS 26 and newer, with system materials on older macOS versions
+- Native anchorless menu panel using the current macOS menu material and appearance
+
+Live activity uses a conservative heuristic: only recent roster activity combined with sidebar/button Accessibility signals is considered working. Old transcript prose is ignored, and active signals are briefly suppressed after system wake while Grok Bot refreshes its renderer.
 
 ## Privacy and data sources
 

@@ -9,6 +9,7 @@ struct AXRecord: Equatable, Sendable {
     let help: String?
     let valueText: String?
     let valueNumber: Double?
+    let frame: CGRect?
 
     var combinedText: String {
         [title, description, help, valueText].compactMap { $0 }.joined(separator: " · ")
@@ -24,7 +25,12 @@ enum ActivityTextClassifier {
         "sending", "computing", "controlling"
     ]
 
-    static func classify(botName: String, records: [AXRecord]) -> (BotState, String?)? {
+    static func classify(
+        botName: String,
+        activityDate: Date?,
+        records: [AXRecord],
+        now: Date = Date()
+    ) -> (BotState, String?)? {
         let name = botName.lowercased()
         let matching = records.filter {
             $0.combinedText.lowercased().contains(name) && ["AXButton", "AXGroup", "AXStaticText"].contains($0.role)
@@ -36,10 +42,33 @@ enum ActivityTextClassifier {
         if let record = matching.first(where: { record in
             failureWords.contains(where: record.combinedText.lowercased().contains)
         }) { return (.failed, cleanDetail(record.combinedText, name: botName)) }
-        if let record = matching.first(where: { record in
+
+        let activeMatches = matching.filter { record in
             activeWords.contains(where: record.combinedText.lowercased().contains)
-        }) { return (.active, cleanDetail(record.combinedText, name: botName)) }
+        }
+        guard !activeMatches.isEmpty, let activityDate else { return nil }
+
+        // Grok Bot leaves old activity prose mounted in the transcript. Strong
+        // signals must be buttons or live in the narrow bot sidebar. Elsewhere,
+        // text is accepted only while the roster timestamp is very recent.
+        let age = now.timeIntervalSince(activityDate)
+        guard age >= -60, age < 15 * 60 else { return nil }
+        let windowFrame = records.first(where: { $0.role == "AXWindow" })?.frame
+        if let strong = activeMatches.first(where: { record in
+            record.role == "AXButton" || isInSidebar(record.frame, windowFrame: windowFrame)
+        }) {
+            return (.active, cleanDetail(strong.combinedText, name: botName))
+        }
+        if age < 90, let recent = activeMatches.first {
+            return (.active, cleanDetail(recent.combinedText, name: botName))
+        }
         return nil
+    }
+
+    private static func isInSidebar(_ frame: CGRect?, windowFrame: CGRect?) -> Bool {
+        guard let frame, let windowFrame, frame.width > 0 else { return false }
+        let sidebarEdge = windowFrame.minX + min(240, windowFrame.width * 0.22)
+        return frame.midX <= sidebarEdge
     }
 
     private static func cleanDetail(_ text: String, name: String) -> String? {
@@ -69,7 +98,9 @@ enum UsageParser {
                 }
             }
             if let value = value(after: "Current plan:", in: text) { plan = value }
-            if let value = value(after: "Usage resets on", in: text) { resetDate = value }
+            if let value = value(after: "Usage resets on", in: text) {
+                resetDate = value.components(separatedBy: ".").first?.trimmingCharacters(in: .whitespaces)
+            }
             if let value = value(after: "Resets in", in: text) { resetRelative = "Resets in " + value }
             if lower.contains("on-demand monthly limit") {
                 if let explicit = record.valueText, !explicit.isEmpty, explicit.lowercased() != "on-demand monthly limit" {
@@ -139,16 +170,28 @@ final class AccessibilityReader {
         bringGrokBotForward()
         try? await Task.sleep(for: .milliseconds(350))
 
-        if pressElement(matchingAny: ["open account menu", "account menu", "account"]) {
+        if pressElement(matchingAny: ["open account menu"]) {
             try? await Task.sleep(for: .milliseconds(250))
         }
-        if pressElement(matchingAny: ["settings"]) {
+        if pressElement(matchingAny: ["weekly usage"]) {
+            try? await Task.sleep(for: .milliseconds(700))
+        } else if pressElement(matchingAny: ["settings"]) {
             try? await Task.sleep(for: .milliseconds(500))
-        }
-        if pressElement(matchingAny: ["usage & billing", "usage and billing"]) {
-            try? await Task.sleep(for: .milliseconds(600))
+            if pressElement(matchingAny: ["usage & billing", "usage and billing"]) {
+                try? await Task.sleep(for: .milliseconds(700))
+            }
         }
         return UsageParser.parse(records: records())
+    }
+
+    func readQuickUsage() async -> UsageSnapshot? {
+        guard isTrusted else { return nil }
+        if let visible = UsageParser.parse(records: records()) { return visible }
+        guard pressElement(matchingAny: ["open account menu"]) else { return nil }
+        try? await Task.sleep(for: .milliseconds(300))
+        let snapshot = UsageParser.parse(records: records())
+        _ = pressElement(matchingAny: ["open account menu"])
+        return snapshot
     }
 
     private func pressElement(matchingAny needles: [String]) -> Bool {
@@ -174,7 +217,8 @@ final class AccessibilityReader {
                 description: stringAttribute(kAXDescriptionAttribute, element),
                 help: stringAttribute(kAXHelpAttribute, element),
                 valueText: value as? String,
-                valueNumber: (value as? NSNumber)?.doubleValue
+                valueNumber: (value as? NSNumber)?.doubleValue,
+                frame: frame(of: element)
             )
         }
     }
@@ -203,5 +247,21 @@ final class AccessibilityReader {
 
     private func stringAttribute(_ attribute: String, _ element: AXUIElement) -> String? {
         rawAttribute(attribute, element) as? String
+    }
+
+    private func frame(of element: AXUIElement) -> CGRect? {
+        guard let positionRaw = rawAttribute(kAXPositionAttribute, element),
+              let sizeRaw = rawAttribute(kAXSizeAttribute, element),
+              CFGetTypeID(positionRaw) == AXValueGetTypeID(),
+              CFGetTypeID(sizeRaw) == AXValueGetTypeID()
+        else { return nil }
+        let positionValue = unsafeDowncast(positionRaw, to: AXValue.self)
+        let sizeValue = unsafeDowncast(sizeRaw, to: AXValue.self)
+        var position = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(positionValue, .cgPoint, &position),
+              AXValueGetValue(sizeValue, .cgSize, &size)
+        else { return nil }
+        return CGRect(origin: position, size: size)
     }
 }

@@ -12,6 +12,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var isGrokBotRunning = false
     @Published private(set) var isAccessibilityTrusted = false
     @Published private(set) var lastChecked = Date()
+    @Published private(set) var isUsageLoading = false
     @Published var notificationsEnabled: Bool {
         didSet { defaults.set(notificationsEnabled, forKey: Keys.notifications) }
     }
@@ -22,9 +23,10 @@ final class AppModel: ObservableObject {
     private let defaults: UserDefaults
     private var timer: Timer?
     private var previousStates: [String: BotState] = [:]
+    private var suppressActiveUntil: Date = .distantPast
 
     private enum Keys {
-        static let events = "activityEvents.v1"
+        static let events = "activityEvents.v2"
         static let usage = "usageSnapshot.v1"
         static let notifications = "notificationsEnabled"
     }
@@ -50,6 +52,12 @@ final class AppModel: ObservableObject {
     }
 
     func refresh() {
+        let now = Date()
+        if !bots.isEmpty, now.timeIntervalSince(lastChecked) > 10 {
+            // Timers resume in a burst after wake. Give Grok Bot time to replace
+            // stale renderer labels before trusting any active state again.
+            suppressActiveUntil = now.addingTimeInterval(12)
+        }
         isGrokBotRunning = statusStore.load() != nil
         isAccessibilityTrusted = accessibility.isTrusted
         let roster = (try? rosterStore.load()) ?? []
@@ -64,7 +72,13 @@ final class AppModel: ObservableObject {
             if bot.awaitingUserResponse != nil {
                 return BotPresentation(bot: bot, state: .needsYou, detail: "Waiting for you")
             }
-            if let classified = ActivityTextClassifier.classify(botName: bot.name, records: records) {
+            if now >= suppressActiveUntil,
+               let classified = ActivityTextClassifier.classify(
+                   botName: bot.name,
+                   activityDate: bot.activityDate,
+                   records: records,
+                   now: now
+               ) {
                 return BotPresentation(bot: bot, state: classified.0, detail: classified.1)
             }
             if (bot.unreadCount ?? 0) > 0 || bot.hasUnread == true {
@@ -74,7 +88,7 @@ final class AppModel: ObservableObject {
         }
         recordChanges(from: bots, to: presentations)
         bots = presentations
-        lastChecked = Date()
+        lastChecked = now
     }
 
     func requestAccessibility() {
@@ -83,11 +97,27 @@ final class AppModel: ObservableObject {
 
     func refreshUsage() {
         Task { @MainActor in
+            isUsageLoading = true
+            defer { isUsageLoading = false }
             if let fresh = await accessibility.openUsageAndRead() {
                 usage = merge(new: fresh, old: usage)
                 persistUsage()
             }
             refresh()
+        }
+    }
+
+    func panelOpened() {
+        refresh()
+        let isStale = usage.map { Date().timeIntervalSince($0.capturedAt) > 15 * 60 } ?? true
+        guard isStale, !isUsageLoading else { return }
+        Task { @MainActor in
+            isUsageLoading = true
+            defer { isUsageLoading = false }
+            if let quick = await accessibility.readQuickUsage() {
+                usage = merge(new: quick, old: usage)
+                persistUsage()
+            }
         }
     }
 

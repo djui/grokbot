@@ -7,21 +7,27 @@ struct PopoverView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider()
+            separator
+            usageSummary
+            separator
             ScrollView {
                 VStack(spacing: 14) {
                     if !model.isAccessibilityTrusted { permissionCard }
-                    usageCard
                     botsCard
                     activityCard
                 }
                 .padding(16)
             }
-            Divider()
+            separator
             footer
         }
         .frame(width: 410, height: 570)
-        .background(.ultraThinMaterial)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.primary.opacity(0.12), lineWidth: 0.75)
+        }
     }
 
     private var header: some View {
@@ -117,45 +123,53 @@ struct PopoverView: View {
         }
     }
 
-    private var usageCard: some View {
-        card {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Label("Usage & limits", systemImage: "gauge.with.dots.needle.50percent")
-                        .font(.subheadline.weight(.semibold))
-                    Spacer()
-                    Button {
-                        model.refreshUsage()
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
+    private var usageSummary: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "gauge.with.dots.needle.50percent")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(.secondary)
+            if let usage = model.usage {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 5) {
+                        Text(usage.percentLabel).font(.subheadline.weight(.semibold).monospacedDigit())
+                        Text("weekly usage").font(.caption).foregroundStyle(.secondary)
+                        if let plan = usage.plan {
+                            Text(plan).font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 5).padding(.vertical, 1)
+                                .background(.quaternary, in: Capsule())
+                        }
                     }
-                    .buttonStyle(.borderless)
-                    .help("Open Usage & Billing in Grok Bot and refresh")
+                    Text(usageLine(usage)).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
                 }
-                if let usage = model.usage {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(usage.percentLabel).font(.system(size: 23, weight: .semibold, design: .rounded))
-                        Text("of weekly usage").font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        if let plan = usage.plan { Text(plan).font(.caption.weight(.medium)).padding(.horizontal, 7).padding(.vertical, 3).background(.quaternary, in: Capsule()) }
-                    }
-                    ProgressView(value: usage.fractionUsed).tint(usage.fractionUsed > 0.85 ? .orange : .blue)
-                    HStack {
-                        Text(usage.resetDateDescription.map { "Resets \($0)" } ?? usage.resetDescription ?? "Reset date unavailable")
-                        Spacer()
-                        Text("On-demand: \(usage.onDemandLimit ?? "—")")
-                    }
-                    .font(.caption).foregroundStyle(.secondary)
-                    Text("Updated \(usage.capturedAt, style: .relative) ago")
-                        .font(.caption2).foregroundStyle(.tertiary)
-                } else {
-                    Text("Open Usage & Billing once to capture your current plan, weekly usage, reset, and on-demand limit.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Button("Refresh from Grok Bot") { model.refreshUsage() }
-                        .buttonStyle(.bordered).controlSize(.small)
+                Spacer()
+                ProgressView(value: usage.fractionUsed)
+                    .progressViewStyle(.circular)
+                    .controlSize(.small)
+                    .tint(usage.fractionUsed > 0.85 ? .orange : .accentColor)
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Usage & limits").font(.subheadline.weight(.semibold))
+                    Text("Refresh once to read the current allowance").font(.caption2).foregroundStyle(.secondary)
                 }
+                Spacer()
             }
+            Button { model.refreshUsage() } label: {
+                if model.isUsageLoading { ProgressView().controlSize(.small) }
+                else { Image(systemName: "arrow.clockwise") }
+            }
+            .buttonStyle(.borderless)
+            .disabled(model.isUsageLoading)
+            .help("Refresh from Grok Bot Usage & Billing")
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+        .frame(minHeight: 52)
+    }
+
+    private func usageLine(_ usage: UsageSnapshot) -> String {
+        let reset = usage.resetDateDescription.map { "Resets \($0)" } ?? usage.resetDescription ?? "Reset unavailable"
+        let demand = usage.onDemandLimit.map { "On-demand: \($0)" }
+        return [reset, demand].compactMap { $0 }.joined(separator: "  ·  ")
     }
 
     private var botsCard: some View {
@@ -218,7 +232,12 @@ struct PopoverView: View {
         return content()
             .padding(13)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .grokbotGlass(in: shape)
+            .background(Color.primary.opacity(0.045), in: shape)
+            .overlay(shape.stroke(Color.primary.opacity(0.08), lineWidth: 0.5))
+    }
+
+    private var separator: some View {
+        Rectangle().fill(Color.primary.opacity(0.09)).frame(height: 0.5)
     }
 
     private func stateColor(_ state: BotState) -> Color {
@@ -229,19 +248,6 @@ struct PopoverView: View {
         case .finished: .blue
         case .unread: .purple
         case .idle: .secondary
-        }
-    }
-}
-
-private extension View {
-    @ViewBuilder
-    func grokbotGlass(in shape: RoundedRectangle) -> some View {
-        if #available(macOS 26.0, *) {
-            self.glassEffect(.regular, in: shape)
-        } else {
-            self
-                .background(.thinMaterial, in: shape)
-                .overlay(shape.stroke(Color.white.opacity(0.16), lineWidth: 0.75))
         }
     }
 }

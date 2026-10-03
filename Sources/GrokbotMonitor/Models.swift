@@ -130,6 +130,8 @@ enum AvatarPalette {
         case "purple": .systemPurple
         case "pink": .systemPink
         case "gray", "grey": .systemGray
+        case "black": .black
+        case nil, "": .systemOrange
         default: .black
         }
     }
